@@ -1,7 +1,7 @@
 # ⚔ DwarTools
 [Скачать](https://github.com/Dartrongus/DwarTools/releases/download/DwarTools/DwarTools.exe)
 
-
+![DwarTools](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/DwarTools.png)
 Инструмент для работы с Dwarium через Chrome DevTools Protocol.
 
 ## Возможности
