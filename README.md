@@ -4,7 +4,7 @@
 
 ![DwarTools](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/DwarTools.png)
 
-![DwarTools2](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/screen.png)
+![DwarTools2](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/screen1.png)
 
 Инструмент для работы с Dwarium через Chrome DevTools Protocol.
 
