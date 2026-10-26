@@ -1,6 +1,6 @@
 # ⚔ DwarTools
 
-[Скачать](https://github.com/Dartrongus/DwarTools/releases/download/DwarTools/DwarTools.exe)
+[Скачать](https://github.com/Dartrongus/DwarTools/releases/download/DwarTools_v0.8/DwarTools_v0.8.exe)
 
 ![DwarTools](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/DwarTools.png)
 
