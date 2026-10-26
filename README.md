@@ -1,20 +1,22 @@
 # ⚔ DwarTools
+
 [Скачать](https://github.com/Dartrongus/DwarTools/releases/download/DwarTools/DwarTools.exe)
 
 ![DwarTools](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/DwarTools.png)
+
 ![DwarTools2](https://raw.githubusercontent.com/Dartrongus/dwar/refs/heads/main/img/screen.png)
 
 Инструмент для работы с Dwarium через Chrome DevTools Protocol.
 
 ## Возможности
 
-* автоматическое подключение DwarTools к Dwarium;
-* автоматический запуск DwarTools на странице персонажа;
-* быстрый просмотр Тени персонажа;
-* быстрый просмотр Эффектов персонажа;
-* отображение информации об экипировке;
-* создание специального ярлыка Dwarium с параметрами DevTools;
-* ручное подключение через параметры запуска.
+- автоматическое подключение DwarTools к Dwarium;
+- автоматический запуск DwarTools на странице персонажа;
+- быстрый просмотр Тени персонажа;
+- быстрый просмотр Эффектов персонажа;
+- отображение информации об экипировке;
+- создание специального ярлыка Dwarium с параметрами DevTools;
+- ручное подключение через параметры запуска.
 
 ## Автоматическое подключение
 
@@ -32,9 +34,9 @@
 4. Нажмите **«Создать ярлык»**.
 5. На рабочем столе появится ярлык:
 
-```text
-Dwarium - DwarTools.lnk
-```
+   ```text
+   Dwarium - DwarTools.lnk
+   ```
 
 6. Полностью закройте Dwarium.
 7. Запускайте Dwarium через созданный ярлык.
@@ -47,8 +49,8 @@ Dwarium - DwarTools.lnk
 
 Доступны две кнопки:
 
-* 👻 **Тень**
-* ✨ **Эффекты**
+- 👻 **Тень**
+- ✨ **Эффекты**
 
 Страницы открываются в новой вкладке непосредственно в запущенном Dwarium.
 
@@ -62,9 +64,9 @@ Dwarium - DwarTools.lnk
 4. Откройте вкладку **«Ярлык»**.
 5. В поле **«Объект»** после пути к `Dwarium.exe` добавьте:
 
-```text
---remote-debugging-port=9222 --remote-allow-origins=*
-```
+   ```text
+   --remote-debugging-port=9222 --remote-allow-origins=*
+   ```
 
 Пример:
 
@@ -83,7 +85,7 @@ Dwarium - DwarTools.lnk
 Запустите:
 
 ```text
-DwarTools_v0.6.exe
+DwarTools.exe
 ```
 
 ## Запуск из исходного кода
@@ -93,49 +95,65 @@ DwarTools_v0.6.exe
 Установите зависимости:
 
 ```bat
-python -m pip install -r requirements.txt
+py -m pip install -r requirements.txt
 ```
 
 Запустите:
 
 ```bat
-python DwarTools_v0.6.py
+py DwarTools.py
 ```
 
-## Сборка EXE
+## Ручная сборка EXE
 
-Для самостоятельной сборки:
+Для самостоятельной сборки выполните следующие действия:
 
 1. Установите Python 3.
-2. Скачайте репозиторий.
-3. Поместите все файлы в одну папку.
-4. Запустите:
+2. Скачайте или клонируйте репозиторий DwarTools.
+3. Откройте командную строку в папке проекта, где находится файл `DwarTools.py`.
+4. Установите PyInstaller:
+
+   ```bat
+   py -m pip install pyinstaller
+   ```
+
+5. Установите зависимости проекта:
+
+   ```bat
+   py -m pip install -r requirements.txt
+   ```
+
+6. Выполните команду сборки:
+
+   ```bat
+   py -m PyInstaller --noconfirm --clean --onefile --windowed --name DwarTools DwarTools.py
+   ```
+
+После завершения сборки готовый исполняемый файл появится в папке:
 
 ```text
-build.bat
+dist\DwarTools.exe
 ```
 
-Скрипт автоматически установит зависимости и создаст EXE.
-
-Готовый файл появится здесь:
-
-```text
-dist\DwarTools_v0.6.exe
-```
+Параметры сборки:
+- `--noconfirm` — перезаписывает существующие результаты сборки без запроса подтверждения;
+- `--clean` — очищает кэш PyInstaller перед сборкой;
+- `--onefile` — создаёт один исполняемый файл;
+- `--windowed` — запускает приложение без консольного окна;
+- `--name DwarTools` — задаёт имя EXE-файла.
 
 ## Структура проекта
 
 ```text
 DwarTools/
 │
-├── DwarTools_v0.6.py
-├── build.bat
+├── DwarTools.py
 ├── requirements.txt
 ├── README.md
 └── .gitignore
 ```
 
-Папки `build` и `dist` не являются частью исходного проекта и исключены из Git.
+Папки `build` и `dist` создаются автоматически при сборке и не являются частью исходного проекта.
 
 ## DevTools
 
@@ -161,4 +179,4 @@ https://dartrongus.github.io/dwar/menu
 
 ## Версия
 
-**DwarTools v0.6**
+**DwarTools v0.8**
