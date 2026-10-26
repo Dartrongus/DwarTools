@@ -10,6 +10,7 @@ import websocket
 import threading
 import time
 import subprocess
+import queue as _queue
 
 
 # ============================================================
@@ -35,19 +36,26 @@ JS_CODE = r"""
     const CONTAINER_ID = 'dwar-artifacts-list-bookmarklet';
     const TOOLTIP_CLASS = 'dwar-artifact-tooltip-bookmarklet';
     const CARD_CLASS = 'dwar-artifact-card-bookmarklet';
+    const EMB_TOOLTIP_CLASS = 'dwar-artifact-embedded-tooltip-bookmarklet';
     const INFO_PANEL_ID = 'dwar-tools-info-panel';
 
     const server = location.hostname.split('.')[0];
     const baseUrl = `https://${server}.dwar.ru`;
 
     const tooltipCache = new Map();
+    const cache = new Map();
 
     let activeTooltip = null;
     let hoverRequestId = 0;
+    let activeEmbTooltip = null;
 
     document.getElementById(CONTAINER_ID)?.remove();
 
     document.querySelectorAll(`.${TOOLTIP_CLASS}`).forEach(element => {
+        element.remove();
+    });
+
+    document.querySelectorAll(`.${EMB_TOOLTIP_CLASS}`).forEach(element => {
         element.remove();
     });
 
@@ -193,8 +201,39 @@ JS_CODE = r"""
             tooltip.style.display = 'none';
         });
 
+        document.querySelectorAll(
+            `.${EMB_TOOLTIP_CLASS}`
+        ).forEach(tooltip => {
+            tooltip.style.display = 'none';
+        });
+
         activeTooltip = null;
+        activeEmbTooltip = null;
         hoverRequestId++;
+    }
+
+    function positionTooltip(tooltipEl, event, width, height) {
+        let x = event.clientX + 15;
+        let y = event.clientY + 15;
+
+        if (x + width > window.innerWidth) {
+            x = event.clientX - width;
+        }
+
+        if (y + height > window.innerHeight) {
+            y = window.innerHeight - height - 10;
+        }
+
+        if (x < 10) {
+            x = 10;
+        }
+
+        if (y < 10) {
+            y = 10;
+        }
+
+        tooltipEl.style.left = `${x}px`;
+        tooltipEl.style.top = `${y}px`;
     }
 
 
@@ -239,6 +278,697 @@ JS_CODE = r"""
                 </div>
             `;
         }
+    }
+
+
+    // ============================================================
+    // НОВАЯ ЛОГИКА: вложения (руны, оправы, узоры, символы, etc.)
+    // ============================================================
+
+    function makeBadge(text) {
+        const badge = document.createElement('span');
+        badge.textContent = text;
+        badge.style.cssText =
+            'color:#7a4a00;font-weight:700;font-size:9px;' +
+            'background:rgba(122,74,0,.18);padding:1px 5px;' +
+            'border-radius:3px;flex-shrink:0;line-height:1.4;' +
+            'align-self:flex-start;margin-top:1px';
+        return badge;
+    }
+
+
+    function makeIcon(data, size) {
+        size = size || 16;
+
+        const icon = document.createElement('img');
+
+        if (data.picture) {
+            icon.src = baseUrl + String(data.picture).replace(/\\/g, '');
+        }
+
+        icon.alt = '';
+        icon.style.cssText =
+            `width:${size}px;height:${size}px;` +
+            'object-fit:contain;flex-shrink:0;margin-top:1px';
+
+        icon.addEventListener('error', () => icon.remove());
+
+        return icon;
+    }
+
+
+    function makeTitle(emb, clamp) {
+        const color = emb.data.color || '#333';
+
+        const title = document.createElement('span');
+
+        const baseStyle =
+            `color:${color};font-weight:600;flex:1;` +
+            'word-break:break-word;line-height:1.25';
+
+        title.style.cssText = clamp && clamp > 0
+            ? `${baseStyle};overflow:hidden;display:-webkit-box;` +
+              `-webkit-line-clamp:${clamp};-webkit-box-orient:vertical`
+            : baseStyle;
+
+        let text = emb.data.title || 'Без названия';
+
+        if (emb.sharpening) {
+            text += ' ' + emb.sharpening;
+        }
+
+        title.textContent = text;
+
+        return title;
+    }
+
+
+    function buildEmbTooltipHtml(emb) {
+        const data = emb.data;
+        const sharpening = emb.sharpening;
+        const color = data.color || '#333';
+
+        const html = [];
+
+        html.push(
+            `<div style="font-weight:700;color:${color};` +
+            `margin-bottom:6px;font-size:13px">` +
+            `${data.title || 'Без названия'}` +
+            (sharpening
+                ? ` <span style="color:#0a0;font-weight:700">` +
+                  `${sharpening}</span>`
+                : '') +
+            `</div>`
+        );
+
+        if (data.lev && data.lev.value) {
+            html.push(
+                `<div style="color:#555;margin-bottom:4px">` +
+                `Уровень: ${data.lev.value}</div>`
+            );
+        }
+
+        if (data.trend) {
+            html.push(
+                `<div style="color:#555;margin-bottom:4px">` +
+                `Направление: ${data.trend}</div>`
+            );
+        }
+
+        if (data.skills && data.skills.length) {
+            html.push(
+                '<div style="margin-top:6px;font-weight:600;' +
+                'color:#333;margin-bottom:3px">Характеристики:</div>'
+            );
+
+            html.push('<div style="padding-left:6px">');
+
+            data.skills.forEach(skill => {
+                const value = String(skill.value || '')
+                    .replace(/<[^>]*>/g, '')
+                    .trim();
+
+                html.push(
+                    `<div style="color:${color}">` +
+                    `${skill.title}: ${value}</div>`
+                );
+            });
+
+            html.push('</div>');
+        }
+
+        if (data.desc) {
+            let cleanDesc = String(data.desc)
+                .replace(/<[^>]*>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (cleanDesc.length > 400) {
+                cleanDesc = cleanDesc.slice(0, 400) + '…';
+            }
+
+            html.push(
+                `<div style="margin-top:6px;color:#555;` +
+                `font-style:italic">${cleanDesc}</div>`
+            );
+        }
+
+        return html.join('');
+    }
+
+
+    function attachEmbHover(element, emb) {
+        element.style.cursor = 'help';
+
+        element.addEventListener('mouseenter', event => {
+            hideAllTooltips();
+
+            const tooltip = (function () {
+                let tooltip = document.querySelector(
+                    `.${EMB_TOOLTIP_CLASS}`
+                );
+
+                if (!tooltip) {
+                    tooltip = document.createElement('div');
+                    tooltip.className = EMB_TOOLTIP_CLASS;
+                    tooltip.style.cssText =
+                        'position:fixed;padding:10px;' +
+                        'box-shadow:0 2px 8px rgba(0,0,0,.35);' +
+                        'display:none;z-index:2147483647;' +
+                        'width:340px;' +
+                        'max-width:calc(100vw - 20px);' +
+                        'border-radius:4px;background:#fff8e7;' +
+                        'pointer-events:none;box-sizing:border-box;' +
+                        'font-size:12px;line-height:1.4;color:#333';
+                    document.body.appendChild(tooltip);
+                }
+
+                return tooltip;
+            })();
+
+            activeEmbTooltip = tooltip;
+
+            positionTooltip(tooltip, event, 360, 340);
+
+            tooltip.innerHTML = buildEmbTooltipHtml(emb);
+            tooltip.style.display = 'block';
+
+            element.style.background = 'rgba(122,74,0,.12)';
+        });
+
+        element.addEventListener('mousemove', event => {
+            if (activeEmbTooltip) {
+                positionTooltip(activeEmbTooltip, event, 360, 340);
+            }
+        });
+
+        element.addEventListener('mouseleave', () => {
+            if (activeEmbTooltip) {
+                activeEmbTooltip.style.display = 'none';
+                activeEmbTooltip = null;
+            }
+
+            element.style.background = 'transparent';
+        });
+    }
+
+
+    function detectEmbeddedLabel(tdLabel, linkText, data) {
+        if (tdLabel === 'Руна') return 'Руна';
+        if (tdLabel === 'Оправа') return 'Оправа';
+        if (tdLabel === 'Узор') return 'Узор';
+        if (tdLabel === 'Магический символ') return 'Магический символ';
+        if (tdLabel === 'Драгоценный камень') return 'Драгоценный камень';
+        if (tdLabel === 'Пластина') return 'Пластина';
+        if (tdLabel === 'Заточено') return 'Заточка';
+
+        const text = (linkText || data.title || '').toLowerCase();
+
+        if (text.includes('символ')) return 'Магический символ';
+        if (text.includes('оправа')) return 'Оправа';
+        if (text.includes('узор')) return 'Узор';
+        if (text.includes('руна')) return 'Руна';
+        if (text.includes('пластина')) return 'Пластина';
+
+        const typeId = parseInt(data.type_id, 10);
+
+        if (typeId === 230) return 'Узор';
+        if (typeId === 117) return 'Оправа';
+        if (typeId === 29) return 'Руна';
+
+        if (typeId === 179 || data.kind === 'Магический символ') {
+            return 'Магический символ';
+        }
+
+        return null;
+    }
+
+
+    async function loadArtifactInfo(url) {
+        if (cache.has(url)) {
+            return cache.get(url);
+        }
+
+        const promise = (async () => {
+            try {
+                const response = await fetch(url, {
+                    credentials: 'same-origin'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const html = await response.text();
+
+                const doc = new DOMParser().parseFromString(
+                    html,
+                    'text/html'
+                );
+
+                const tip =
+                    doc.querySelector('.bg-inner-b')?.innerHTML || '';
+
+                const altMap = new Map();
+
+                doc.querySelectorAll('script:not([src])').forEach(script => {
+                    const matches = [...script.textContent.matchAll(
+                        /art_alt\["([^"]+)"\]\s*=\s*(\{[\s\S]*?\});/g
+                    )];
+
+                    for (const [, divId, body] of matches) {
+                        try {
+                            const data = Function(
+                                `"use strict";return(${body});`
+                            )();
+
+                            if (data && typeof data === 'object') {
+                                altMap.set(divId, data);
+                            }
+                        } catch (e) {
+                            console.warn(
+                                '[DwarTools] art_alt parse error:',
+                                e
+                            );
+                        }
+                    }
+                });
+
+                const embedded = [];
+                const seenIds = new Set();
+                let lastWasSymbol = false;
+
+                doc.querySelectorAll('a[div_id]').forEach(link => {
+                    const divId = link.getAttribute('div_id');
+
+                    if (!divId || !altMap.has(divId) || seenIds.has(divId)) {
+                        return;
+                    }
+
+                    const row = link.closest('tr');
+
+                    if (!row) {
+                        return;
+                    }
+
+                    const cells = row.querySelectorAll('td');
+
+                    if (cells.length < 2) {
+                        return;
+                    }
+
+                    const tdLabel = cells[0].textContent
+                        .replace(/\u00A0/g, '')
+                        .trim();
+
+                    const linkText = link.textContent || '';
+                    const data = altMap.get(divId);
+
+                    let label = detectEmbeddedLabel(
+                        tdLabel,
+                        linkText,
+                        data
+                    );
+
+                    if (!label && tdLabel === '' && lastWasSymbol) {
+                        label = 'Магический символ';
+                    }
+
+                    if (!label) {
+                        return;
+                    }
+
+                    lastWasSymbol = label === 'Магический символ';
+
+                    let sharpening = null;
+
+                    const sharpeningMatch = linkText.match(
+                        /(\(▲\d+%\))/
+                    );
+
+                    if (sharpeningMatch) {
+                        sharpening = sharpeningMatch[1];
+                    }
+
+                    seenIds.add(divId);
+
+                    embedded.push({
+                        label,
+                        data,
+                        sharpening
+                    });
+                });
+
+                return { tip, emb: embedded };
+
+            } catch (error) {
+                console.warn(
+                    '[DwarTools] load failed:',
+                    url,
+                    error
+                );
+
+                return {
+                    tip: '<div style="padding:10px;">' +
+                         'Не удалось загрузить описание предмета' +
+                         '</div>',
+                    emb: []
+                };
+            }
+        })();
+
+        cache.set(url, promise);
+
+        return promise;
+    }
+
+
+    function buildEnchantOverlay(emb) {
+        if (!emb || emb.length === 0) {
+            return null;
+        }
+
+        const rune = emb.find(e => e.label === 'Руна');
+        const oprava = emb.find(e => e.label === 'Оправа');
+
+        if (!rune && !oprava) {
+            return null;
+        }
+
+        const overlay = document.createElement('span');
+        overlay.className = 'enchants';
+        overlay.style.cssText =
+            'position:absolute;top:2px;left:2px;' +
+            'display:flex;flex-direction:column;gap:2px;' +
+            'z-index:2;pointer-events:none';
+
+        if (oprava) {
+            const img = document.createElement('img');
+            img.src = `${baseUrl}/images/enchants/oprava.png`;
+            img.alt = '';
+            img.className = 'enchant2_png';
+            img.style.cssText = 'width:18px;height:18px;display:block';
+            img.addEventListener('error', () => img.remove());
+            overlay.appendChild(img);
+        }
+
+        if (rune) {
+            const quality = parseInt(rune.data.quality, 10) || 1;
+
+            const img = document.createElement('img');
+            img.src = `${baseUrl}/images/enchants/1_${quality}.png`;
+            img.alt = '';
+            img.className = 'enchant_png';
+            img.style.cssText = 'width:18px;height:18px;display:block';
+            img.addEventListener('error', () => img.remove());
+            overlay.appendChild(img);
+        }
+
+        return overlay;
+    }
+
+
+    function renderEmbeddedList(emb, container) {
+        const groupOrder = [];
+        const groups = new Map();
+
+        emb.forEach(item => {
+            if (!groups.has(item.label)) {
+                groups.set(item.label, []);
+                groupOrder.push(item.label);
+            }
+
+            groups.get(item.label).push(item);
+        });
+
+        groupOrder.forEach(label => {
+            const items = groups.get(label);
+
+            if (items.length === 1) {
+                const row = document.createElement('div');
+                row.className = 'dwar-artifact-embedded-row-bookmarklet';
+                row.style.cssText =
+                    'display:flex;align-items:flex-start;gap:4px;' +
+                    'padding:3px 4px;border-radius:4px;' +
+                    'font-size:10px;line-height:1.3';
+
+                row.append(
+                    makeBadge(items[0].label),
+                    makeIcon(items[0].data),
+                    makeTitle(items[0], 0)
+                );
+
+                attachEmbHover(row, items[0]);
+
+                container.appendChild(row);
+            } else {
+                const group = document.createElement('div');
+                group.style.cssText = 'padding:3px 4px;border-radius:4px';
+
+                const header = document.createElement('div');
+                header.style.cssText =
+                    'display:flex;align-items:center;gap:4px;' +
+                    'margin-bottom:2px';
+
+                header.appendChild(
+                    makeBadge(`${label} (${items.length})`)
+                );
+
+                group.appendChild(header);
+
+                items.forEach(emb => {
+                    const sub = document.createElement('div');
+                    sub.style.cssText =
+                        'display:flex;align-items:flex-start;gap:4px;' +
+                        'padding:2px 4px 2px 14px;border-radius:3px;' +
+                        'font-size:10px;line-height:1.3';
+
+                    sub.append(
+                        makeIcon(emb.data),
+                        makeTitle(emb, 0)
+                    );
+
+                    attachEmbHover(sub, emb);
+
+                    group.appendChild(sub);
+                });
+
+                container.appendChild(group);
+            }
+        });
+    }
+
+
+    function renderCard({ data, level }) {
+        if (!data) {
+            return null;
+        }
+
+        const artifactId = data.id;
+
+        if (!artifactId) {
+            console.warn('[DwarTools] missing id:', data);
+            return null;
+        }
+
+        const artifactUrl =
+            `${baseUrl}/artifact_info.php?artifact_id=${artifactId}`;
+
+        const card = document.createElement('div');
+        card.className = CARD_CLASS;
+
+        const border = (function (color) {
+            if (!color) {
+                return null;
+            }
+
+            const c = color.toLowerCase();
+
+            if (c === '#f400a1') return '2px solid #f400a1';
+            if (c === '#f55e27') return '2px solid #f55e27';
+
+            return null;
+        })(data.color);
+
+        card.style.cssText =
+            `width:260px;min-height:130px;` +
+            'display:flex;flex-direction:column;' +
+            `border:${border || '1px solid #e0e0e0'};` +
+            'padding:10px;border-radius:8px;' +
+            'background:#ffe2a8;box-sizing:border-box;' +
+            'position:relative;' +
+            'transition:box-shadow .2s,transform .2s';
+
+        card.addEventListener('mouseenter', () => {
+            card.style.boxShadow = '0 4px 10px rgba(0,0,0,.25)';
+            card.style.transform = 'translateY(-2px)';
+        });
+
+        card.addEventListener('mouseleave', () => {
+            card.style.boxShadow = 'none';
+            card.style.transform = 'none';
+        });
+
+        const link = document.createElement('a');
+        link.href = artifactUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.style.cssText =
+            'text-decoration:none;display:flex;' +
+            'flex-direction:column;align-items:flex-start;' +
+            'gap:6px;width:100%;min-height:110px;' +
+            'position:relative';
+
+        const topRow = document.createElement('div');
+        topRow.style.cssText =
+            'display:flex;align-items:flex-start;gap:10px;' +
+            'width:100%';
+
+        const imageWrap = document.createElement('div');
+        imageWrap.style.cssText =
+            'position:relative;width:80px;' +
+            'max-height:100px;flex-shrink:0';
+
+        const image = document.createElement('img');
+
+        if (data.picture) {
+            image.src = `${baseUrl}` +
+                `${String(data.picture).replace(/\\/g, '')}`;
+        }
+
+        image.alt = data.title || 'Предмет';
+        image.style.cssText =
+            'width:80px;max-height:100px;object-fit:contain;' +
+            'flex-shrink:0';
+
+        image.addEventListener('error', () => {
+            image.style.display = 'none';
+        });
+
+        imageWrap.appendChild(image);
+
+        const title = document.createElement('span');
+        title.textContent = data.title || 'Без названия';
+        title.style.cssText =
+            `color:${data.color || '#000'};` +
+            'font-weight:700;line-height:1.25;' +
+            'display:-webkit-box;-webkit-line-clamp:3;' +
+            '-webkit-box-orient:vertical;overflow:hidden;' +
+            'word-break:break-word';
+
+        topRow.append(imageWrap, title);
+        link.appendChild(topRow);
+
+        const copyLink = document.createElement('a');
+        copyLink.href = '#';
+        copyLink.textContent = 'скопировать ссылку';
+        copyLink.title = 'Копировать ссылку на предмет';
+        copyLink.style.cssText =
+            'font-size:10px;color:#7a4a00;' +
+            'text-decoration:underline;cursor:pointer;' +
+            'align-self:flex-start;padding:0;margin-top:2px;' +
+            'opacity:.85';
+
+        copyLink.addEventListener('mouseenter', () => {
+            copyLink.style.opacity = '1';
+        });
+
+        copyLink.addEventListener('mouseleave', () => {
+            copyLink.style.opacity = '.85';
+        });
+
+        copyLink.addEventListener('click', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            try {
+                await navigator.clipboard.writeText(artifactUrl);
+            } catch (err) {
+                const textArea = document.createElement('textarea');
+                textArea.value = artifactUrl;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+
+                try {
+                    document.execCommand('copy');
+                } finally {
+                    textArea.remove();
+                }
+            }
+
+            const oldText = copyLink.textContent;
+            copyLink.textContent = '✓ скопировано';
+
+            setTimeout(() => {
+                copyLink.textContent = oldText;
+            }, 1000);
+        });
+
+        link.appendChild(copyLink);
+
+        const embWrap = document.createElement('div');
+        embWrap.style.cssText =
+            'margin-top:8px;' +
+            'border-top:1px dashed rgba(122,74,0,.3);' +
+            'padding-top:6px;display:flex;' +
+            'flex-direction:column;gap:2px';
+
+        const embLoading = document.createElement('div');
+        embLoading.textContent = 'Загрузка вложений…';
+        embLoading.style.cssText =
+            'font-size:10px;color:#7a4a00;font-style:italic;' +
+            'padding:2px 0';
+
+        embWrap.appendChild(embLoading);
+
+        loadArtifactInfo(artifactUrl).then(({ emb }) => {
+            const overlay = buildEnchantOverlay(emb);
+
+            if (overlay) {
+                imageWrap.appendChild(overlay);
+            }
+
+            embWrap.innerHTML = '';
+
+            if (!emb || emb.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'Без вложений';
+                empty.style.cssText =
+                    'font-size:10px;color:#999;font-style:italic;' +
+                    'padding:2px 0';
+                embWrap.appendChild(empty);
+                return;
+            }
+
+            renderEmbeddedList(emb, embWrap);
+        }).catch(() => {
+            embWrap.innerHTML = '';
+
+            const error = document.createElement('div');
+            error.textContent = 'Ошибка загрузки вложений';
+            error.style.cssText =
+                'font-size:10px;color:#c00;font-style:italic';
+            embWrap.appendChild(error);
+        });
+
+        card.appendChild(link);
+        card.appendChild(embWrap);
+
+        return card;
+    }
+
+
+    function renderCards(container, items) {
+        items.forEach(item => {
+            const card = renderCard(item);
+
+            if (card) {
+                container.appendChild(card);
+            }
+        });
     }
 
 
@@ -754,463 +1484,74 @@ JS_CODE = r"""
     }
 
 
-    const container =
-        document.createElement('div');
-
+    const container = document.createElement('div');
     container.id = CONTAINER_ID;
-
 
     container.style.cssText = `
         margin: 20px;
         padding: 15px;
         border: 1px solid #ccc;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 20px;
         border-radius: 10px;
         box-sizing: border-box;
         background: transparent;
     `;
 
-
-    artifacts.forEach(
-        ({ data, level }) => {
-
-            if (!data) {
-                return;
-            }
-
-
-            const artifactId = data.id;
-
-
-            if (!artifactId) {
-                return;
-            }
-
-
-            const artifactUrl =
-                `${baseUrl}/artifact_info.php?artifact_id=${artifactId}`;
-
-
-            const card =
-                document.createElement('div');
-
-
-            card.className = CARD_CLASS;
-
-
-            card.style.cssText = `
-                width: 260px;
-                min-height: 130px;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                border: 1px solid #e0e0e0;
-                padding: 10px;
-                border-radius: 8px;
-                background: #ffe2a8;
-                box-sizing: border-box;
-                position: relative;
-                transition: box-shadow .2s, transform .2s;
-            `;
-
-
-            card.addEventListener(
-                'mouseenter',
-                () => {
-                    card.style.boxShadow =
-                        '0 4px 10px rgba(0,0,0,.25)';
-
-                    card.style.transform =
-                        'translateY(-2px)';
-                }
-            );
-
-
-            card.addEventListener(
-                'mouseleave',
-                () => {
-                    card.style.boxShadow = 'none';
-                    card.style.transform = 'none';
-                }
-            );
-
-
-            const levelBadge =
-                document.createElement('div');
-
-
-            levelBadge.textContent = level;
-
-
-            levelBadge.style.cssText = `
-                position: absolute;
-                top: 6px;
-                right: 6px;
-                background: #7a4a00;
-                color: #fff;
-                font-size: 12px;
-                padding: 2px 6px;
-                border-radius: 10px;
-                font-weight: 700;
-                z-index: 2;
-            `;
-
-
-            const copyButton =
-                document.createElement('button');
-
-
-            copyButton.type = 'button';
-            copyButton.textContent = '⧉';
-            copyButton.title = 'Копировать ссылку';
-
-
-            copyButton.style.cssText = `
-                position: absolute;
-                top: 6px;
-                left: 6px;
-                background: #7a4a00;
-                color: #fff;
-                font-size: 12px;
-                padding: 2px 6px;
-                border-radius: 10px;
-                font-weight: 700;
-                cursor: pointer;
-                border: none;
-                z-index: 3;
-                line-height: 16px;
-            `;
-
-
-            copyButton.addEventListener(
-                'click',
-                async event => {
-
-                    event.preventDefault();
-                    event.stopPropagation();
-
-
-                    try {
-                        await navigator.clipboard.writeText(
-                            artifactUrl
-                        );
-
-                    } catch (error) {
-
-                        const textArea =
-                            document.createElement(
-                                'textarea'
-                            );
-
-
-                        textArea.value =
-                            artifactUrl;
-
-
-                        textArea.style.position =
-                            'fixed';
-
-                        textArea.style.opacity =
-                            '0';
-
-
-                        document.body.appendChild(
-                            textArea
-                        );
-
-
-                        textArea.focus();
-                        textArea.select();
-
-
-                        try {
-                            document.execCommand(
-                                'copy'
-                            );
-
-                        } finally {
-                            textArea.remove();
-                        }
-                    }
-
-
-                    const oldText =
-                        copyButton.textContent;
-
-
-                    copyButton.textContent = '✓';
-
-
-                    setTimeout(
-                        () => {
-                            copyButton.textContent =
-                                oldText;
-                        },
-                        800
-                    );
-                }
-            );
-
-
-            const link =
-                document.createElement('a');
-
-
-            link.href = artifactUrl;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-
-
-            link.style.cssText = `
-                color: black;
-                text-decoration: none;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                width: 100%;
-                min-height: 110px;
-            `;
-
-
-            const image =
-                document.createElement('img');
-
-
-            if (data.picture) {
-                let picture =
-                    String(data.picture);
-
-
-                picture = picture.replace(
-                    /\\/g,
-                    ''
-                );
-
-
-                if (picture.startsWith('http')) {
-                    image.src = picture;
-
-                } else {
-                    image.src =
-                        `${baseUrl}${picture}`;
-                }
-            }
-
-
-            image.alt =
-                data.title || 'Предмет';
-
-
-            image.style.cssText = `
-                width: 80px;
-                max-height: 100px;
-                object-fit: contain;
-                flex-shrink: 0;
-            `;
-
-
-            image.addEventListener(
-                'error',
-                () => {
-                    image.style.display =
-                        'none';
-                }
-            );
-
-
-            const title =
-                document.createElement('span');
-
-
-            title.textContent =
-                data.title || 'Без названия';
-
-
-            title.style.cssText = `
-                font-weight: 600;
-                line-height: 1.2;
-                display: -webkit-box;
-                -webkit-line-clamp: 3;
-                -webkit-box-orient: vertical;
-                overflow: hidden;
-                word-break: break-word;
-            `;
-
-
-            const tooltip =
-                document.createElement('div');
-
-
-            tooltip.className =
-                TOOLTIP_CLASS;
-
-
-            tooltip.style.cssText = `
-                position: fixed;
-                padding: 10px;
-                box-shadow: 0 2px 8px rgba(0,0,0,.35);
-                display: none;
-                z-index: 2147483647;
-                width: 300px;
-                max-width: calc(100vw - 20px);
-                border-radius: 4px;
-                background: transparent;
-                pointer-events: none;
-                box-sizing: border-box;
-            `;
-
-
-            document.body.appendChild(
-                tooltip
-            );
-
-
-            function updateTooltipPosition(event) {
-
-                let x =
-                    event.clientX + 15;
-
-                let y =
-                    event.clientY + 15;
-
-
-                const tooltipWidth = 320;
-                const tooltipHeight = 250;
-
-
-                if (
-                    x + tooltipWidth >
-                    window.innerWidth
-                ) {
-                    x =
-                        event.clientX -
-                        tooltipWidth;
-                }
-
-
-                if (
-                    y + tooltipHeight >
-                    window.innerHeight
-                ) {
-                    y =
-                        window.innerHeight -
-                        tooltipHeight -
-                        10;
-                }
-
-
-                if (x < 10) {
-                    x = 10;
-                }
-
-
-                if (y < 10) {
-                    y = 10;
-                }
-
-
-                tooltip.style.left =
-                    `${x}px`;
-
-                tooltip.style.top =
-                    `${y}px`;
-            }
-
-
-            link.addEventListener(
-                'mousemove',
-                updateTooltipPosition
-            );
-
-
-            link.addEventListener(
-                'mouseenter',
-                async event => {
-
-                    hideAllTooltips();
-
-
-                    activeTooltip =
-                        tooltip;
-
-
-                    const currentRequestId =
-                        ++hoverRequestId;
-
-
-                    updateTooltipPosition(
-                        event
-                    );
-
-
-                    const content =
-                        await loadTooltip(
-                            artifactUrl
-                        );
-
-
-                    if (
-                        currentRequestId !==
-                            hoverRequestId ||
-                        activeTooltip !==
-                            tooltip ||
-                        !link.matches(':hover')
-                    ) {
-                        return;
-                    }
-
-
-                    tooltip.innerHTML =
-                        content;
-
-
-                    tooltip.style.display =
-                        'block';
-                }
-            );
-
-
-            link.addEventListener(
-                'mouseleave',
-                () => {
-
-                    if (
-                        activeTooltip ===
-                        tooltip
-                    ) {
-
-                        tooltip.style.display =
-                            'none';
-
-                        activeTooltip =
-                            null;
-
-                        hoverRequestId++;
-                    }
-                }
-            );
-
-
-            link.append(
-                image,
-                title
-            );
-
-
-            card.append(
-                levelBadge,
-                copyButton,
-                link
-            );
-
-
-            container.appendChild(
-                card
-            );
-        }
-    );
+    // --- Тулбар: Заголовок + Свернуть ---
+    const toolbar = document.createElement('div');
+    toolbar.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-family: Arial, sans-serif;
+        font-size: 12px;
+        color: #7a4a00;
+    `;
+
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = 'Предметы персонажа';
+    titleSpan.style.cssText = `
+        font-weight: 700;
+        font-size: 13px;
+        margin-right: auto;
+    `;
+    toolbar.appendChild(titleSpan);
+
+    const collapseBtn = document.createElement('button');
+    collapseBtn.type = 'button';
+    collapseBtn.textContent = 'Свернуть';
+    collapseBtn.style.cssText = `
+        padding: 3px 10px;
+        border: 1px solid #7a4a00;
+        background: #ffe2a8;
+        color: #7a4a00;
+        font-size: 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 600;
+    `;
+    toolbar.appendChild(collapseBtn);
+
+    container.appendChild(toolbar);
+
+    // --- Контейнер карточек ---
+    const cardsContainer = document.createElement('div');
+    cardsContainer.style.cssText = `
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+    `;
+    container.appendChild(cardsContainer);
+
+    let collapsed = false;
+
+    collapseBtn.addEventListener('click', () => {
+        collapsed = !collapsed;
+        cardsContainer.style.display = collapsed ? 'none' : 'flex';
+        collapseBtn.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+    });
+
+    renderCards(cardsContainer, artifacts);
 
 
     document.body.prepend(
@@ -3197,7 +3538,7 @@ footer_label.pack(
 
 version_label = ttk.Label(
     footer,
-    text="v0.6",
+    text="v0.8",
     style="Footer.TLabel"
 )
 
@@ -3355,7 +3696,7 @@ def run_tool(
         if show_errors:
 
             messagebox.showerror(
-                "DwarTools v0.6",
+                "DwarTools v0.8",
                 str(error)
             )
 
@@ -3377,172 +3718,178 @@ auto_last_page = None
 auto_busy = False
 
 
-def automatic_check():
+# ============================================================
+# AUTOMATIC MONITOR (BACKGROUND THREAD)
+# ------------------------------------------------------------
+# Раньше automatic_check() выполнялся в основном потоке tkinter и
+# каждые ~1.2 секунды делал блокирующий HTTP-запрос к DevTools
+# (timeout=3 секунды). Если Dwarium не запущен — запрос висел до
+# таймаута, всё это время окно не могло обрабатывать события мыши
+# и перемещалось рывками.
+#
+# Теперь мониторинг крутится в фоновом потоке, а статусы
+# передаются в основной поток через queue. GUI больше не виснет.
+# ============================================================
 
-    global auto_last_url
-    global auto_last_page
-    global auto_busy
-
-
-    if auto_busy:
-
-        root.after(
-            1000,
-            automatic_check
-        )
-
-        return
-
-
-    auto_busy = True
+_monitor_queue = _queue.Queue()
+_monitor_stop = threading.Event()
+_monitor_thread = None
 
 
+def _push_status(text, color=None):
+    """Положить статус в очередь — основной поток применит его."""
+    _monitor_queue.put(("status", text, color))
+
+
+def _process_monitor_queue():
+    """Раз в 100мс читаем очередь и обновляем UI.
+    Вызывается только в основном потоке tkinter через root.after."""
     try:
-
-        tabs = get_game_tabs()
-
-
-        if not tabs:
-
-            set_status(
-                "● Ожидание Dwarium...",
-                COLORS["secondary"]
-            )
-
-            return
-
-
-        tab, error = find_active_game_tab()
-
-
-        if not tab:
-            return
-
-
-        url = tab.get(
-            "url",
-            ""
-        )
-
-
-        tab_id = tab.get(
-            "id"
-        )
-
-
-        if (
-            url == auto_last_url
-            and
-            tab_id == auto_last_page
-        ):
-
-            return
-
-
-        if not is_character_page(tab):
-
-            set_status(
-                "● Загрузка страницы персонажа...",
-                COLORS["warning"]
-            )
-
-            return
-
-
-        set_status(
-            "● Автозапуск DwarTools...",
-            COLORS["warning"]
-        )
-
-
-        try:
-
-            info = inject_tool(
-                tab
-            )
-
-        except Exception:
-
-            set_status(
-                "● Ожидание полной загрузки страницы...",
-                COLORS["warning"]
-            )
-
-            return
-
-
-        if (
-            not info
-            or
-            info.get("success") is not True
-        ):
-
-            set_status(
-                "● Ожидание загрузки DwarTools...",
-                COLORS["warning"]
-            )
-
-            return
-
-
-        auto_last_url = url
-        auto_last_page = tab_id
-
-
-        if info.get(
-            "type"
-        ) == "appearance":
-
-            nickname = info.get(
-                "nickname"
-            )
-
-
-            set_status(
-                "● Персонаж" +
-                (
-                    f": {nickname}"
-                    if nickname
-                    else ""
-                ),
-                COLORS["accent"]
-            )
-
-
-        elif info.get(
-            "artifacts",
-            0
-        ) > 0:
-
-            set_status(
-                f"● Экипировка: "
-                f"{info['artifacts']} предметов",
-                COLORS["success"]
-            )
-
-
-        else:
-
-            set_status(
-                "● Панель персонажа активна",
-                COLORS["accent"]
-            )
-
-
-    except Exception:
-
+        while True:
+            item = _monitor_queue.get_nowait()
+            kind = item[0]
+            if kind == "status":
+                _, text, color = item
+                set_status(text, color)
+    except _queue.Empty:
         pass
 
-
-    finally:
-
-        auto_busy = False
+    root.after(100, _process_monitor_queue)
 
 
-        root.after(
-            1200,
-            automatic_check
-        )
+def _dwarium_monitor_worker():
+    """Фоновый поток: постоянно проверяет Dwarium.
+    Все блокирующие операции (HTTP/WebSocket к DevTools) выполняются
+    здесь, не замораживая GUI."""
+    global auto_last_url
+    global auto_last_page
+
+    while not _monitor_stop.is_set():
+        try:
+            tabs = get_game_tabs()
+
+            if not tabs:
+                _push_status(
+                    "● Ожидание Dwarium...",
+                    COLORS["secondary"]
+                )
+                # Долгая пауза, когда Dwarium не запущен —
+                # нечего его спамить запросами.
+                if _monitor_stop.wait(3.0):
+                    break
+                continue
+
+            tab, error = find_active_game_tab()
+
+            if not tab:
+                _push_status(
+                    "● Ожидание Dwarium...",
+                    COLORS["secondary"]
+                )
+                if _monitor_stop.wait(2.0):
+                    break
+                continue
+
+            url = tab.get("url", "")
+            tab_id = tab.get("id")
+
+            if (
+                url == auto_last_url
+                and tab_id == auto_last_page
+            ):
+                if _monitor_stop.wait(1.2):
+                    break
+                continue
+
+            if not is_character_page(tab):
+                _push_status(
+                    "● Загрузка страницы персонажа...",
+                    COLORS["warning"]
+                )
+                if _monitor_stop.wait(1.2):
+                    break
+                continue
+
+            _push_status(
+                "● Автозапуск DwarTools...",
+                COLORS["warning"]
+            )
+
+            try:
+                info = inject_tool(tab)
+            except Exception:
+                _push_status(
+                    "● Ожидание полной загрузки страницы...",
+                    COLORS["warning"]
+                )
+                if _monitor_stop.wait(1.2):
+                    break
+                continue
+
+            if (
+                not info
+                or info.get("success") is not True
+            ):
+                _push_status(
+                    "● Ожидание загрузки DwarTools...",
+                    COLORS["warning"]
+                )
+                if _monitor_stop.wait(1.2):
+                    break
+                continue
+
+            auto_last_url = url
+            auto_last_page = tab_id
+
+            if info.get("type") == "appearance":
+                nickname = info.get("nickname")
+                _push_status(
+                    "● Персонаж" +
+                    (f": {nickname}" if nickname else ""),
+                    COLORS["accent"]
+                )
+            elif info.get("artifacts", 0) > 0:
+                _push_status(
+                    f"● Экипировка: "
+                    f"{info['artifacts']} предметов",
+                    COLORS["success"]
+                )
+            else:
+                _push_status(
+                    "● Панель персонажа активна",
+                    COLORS["accent"]
+                )
+
+        except Exception:
+            _push_status(
+                "● Ожидание Dwarium DevTools...",
+                COLORS["secondary"]
+            )
+            if _monitor_stop.wait(2.0):
+                break
+
+
+def _start_dwarium_monitor():
+    """Запускает фоновый поток мониторинга и обработчик очереди."""
+    global _monitor_thread
+
+    _monitor_stop.clear()
+
+    _monitor_thread = threading.Thread(
+        target=_dwarium_monitor_worker,
+        daemon=True,
+        name="DwariumMonitor"
+    )
+    _monitor_thread.start()
+
+    # Запускаем периодическое чтение очереди в основном потоке
+    root.after(100, _process_monitor_queue)
+
+
+def _stop_dwarium_monitor():
+    """Останавливает фоновый поток мониторинга.
+    Вызывается при закрытии окна."""
+    _monitor_stop.set()
 
 
 # ============================================================
@@ -3550,11 +3897,7 @@ def automatic_check():
 # ============================================================
 
 def start_automatic_monitor():
-
-    root.after(
-        800,
-        automatic_check
-    )
+    _start_dwarium_monitor()
 
 
 # ============================================================
@@ -3608,7 +3951,7 @@ nickname_entry.bind(
 # ============================================================
 
 def on_close():
-
+    _stop_dwarium_monitor()
     root.destroy()
 
 
